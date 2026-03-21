@@ -12,6 +12,10 @@ from scipy.spatial import KDTree
 import itertools
 from scipy.interpolate import RegularGridInterpolator
 
+#CUDA Torch stuff
+import torch
+from torch_kdtree import build_kd_tree
+
 #This one is for timing the approach
 from datetime import datetime
 
@@ -78,31 +82,40 @@ radii = np.array([radii_dict[k] for k in names])
     Construct the grid and add the conductances based on the closest atom (this is using the tree query method)
 '''
 
-# #Grid spacing along dimensions
-x_arr = np.arange(-1.0 * int(size_x / 2), 1.0 * int(size_x / 2), 1, dtype=int)
-y_arr = np.arange(-1.0 * int(size_y / 2), 1.0 * int(size_y / 2), 1, dtype=int)
-z_arr = np.arange(-1.0 * int(size_z / 2), 1.0 * int(size_z / 2), 1, dtype=int)
+device = 0
+k = 10
 
-coords_x, coords_y, coords_z = np.meshgrid(x_arr, y_arr, z_arr, indexing='ij')
+#Grid spacing along dimensions
+x_arr = torch.arange(-1.0 * int(size_x / 2), 1.0 * int(size_x / 2), 1, dtype=int).to(device)
+y_arr = torch.arange(-1.0 * int(size_y / 2), 1.0 * int(size_y / 2), 1, dtype=int).to(device)
+z_arr = torch.arange(-1.0 * int(size_z / 2), 1.0 * int(size_z / 2), 1, dtype=int).to(device)
+
+coords_x, coords_y, coords_z = torch.meshgrid(x_arr, y_arr, z_arr, indexing='ij')
 
 size_x = coords_x.shape[0]
 size_y = coords_y.shape[1]
 size_z = coords_z.shape[2]
 
-#Generate the coordinate grid in the proper way for scipy's interpolator to use it
-coords = np.concatenate([np.expand_dims(coords_x,-1), np.expand_dims(coords_y, -1), np.expand_dims(coords_z, -1)], axis=3)
+coords = torch.concatenate([coords_x.unsqueeze(3), coords_y.unsqueeze(3), coords_z.unsqueeze(3)], axis=3)
 coords = coords.reshape(size_x * size_y * size_z, 3)
 
-#Generate the KDTree
-tree_pos = KDTree(system.positions)
+system_positions = torch.as_tensor(system.positions, device=device)
 
-#Get distances and indices for the 10 nearest neighbors (empirically matches with actual radial distances from testing)
-distances, indices = tree_pos.query(coords, k=10)
-conductivity_map = np.min(distances - radii[indices], axis=1) #Make conductivity map
-conductivity_map = bulk_conductivity * np.clip(conductivity_map / r_slope_inv + r_intercept, 0, 1)
+tree_system = build_kd_tree(system_positions)
+distances, indices = tree_system.query(coords.to(torch.float32), nr_nns_searches=k)
 
-#Make the interpolator
-interpolator = RegularGridInterpolator((x_arr, y_arr, z_arr), conductivity_map.reshape(size_x, size_y, size_z), bounds_error=False, fill_value=bulk_conductivity)
+radii_torch = torch.as_tensor(radii, device=device)
+
+conductivity_map = torch.min(torch.sqrt(distances) - radii_torch[indices], axis=1).values
+conductivity_map = bulk_conductivity * torch.clamp(conductivity_map / r_slope_inv + r_intercept, 0, 1)
+
+x_arr_cpu = x_arr.detach().cpu().numpy()
+y_arr_cpu = y_arr.detach().cpu().numpy()
+z_arr_cpu = z_arr.detach().cpu().numpy()
+
+conductivity_map_cpu = conductivity_map.detach().cpu().numpy()
+
+interpolator = RegularGridInterpolator((x_arr_cpu, y_arr_cpu, z_arr_cpu), conductivity_map_cpu.reshape(size_x, size_y, size_z), bounds_error=False, fill_value=bulk_conductivity)
 
 '''
     Dolfinx setup following Pinhao's code
