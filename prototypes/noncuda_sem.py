@@ -31,7 +31,7 @@ Voltage = 0.18
 
 #MD System
 system_psf = "../data/test/system_complete.psf"
-system_pdb = "../data/test/prod4.dcd" 
+system_pdb = "../data/test/prod1.dcd" 
 stride = 200
 
 system_universe = md.Universe(system_psf, system_pdb)
